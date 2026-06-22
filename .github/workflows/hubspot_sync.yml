@@ -1,0 +1,73 @@
+name: HubSpot Sync
+
+on:
+  # Runs every Monday at 7:00 AM Central Time (12:00 UTC)
+  schedule:
+    - cron: "0 12 * * 1"
+
+  # Also allows triggering manually from the GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2-hour safety cutoff
+
+    steps:
+      # ── 1. Check out the repo ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ───────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ── 3. Install dependencies ────────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. Restore sync_state.json from the previous run (if it exists) ───
+      #
+      #   Why: GitHub Actions starts fresh every run. We persist sync_state.json
+      #   in the cache so that if a run was interrupted mid-way (quota hit),
+      #   the next run can pick up where it left off instead of starting over.
+      #
+      - name: Restore sync state cache
+        uses: actions/cache@v4
+        with:
+          path: sync_state.json
+          key: sync-state-${{ runner.os }}
+          restore-keys: |
+            sync-state-
+
+      # ── 5. Run the sync ────────────────────────────────────────────────────
+      - name: Run HubSpot sync
+        env:
+          INDUSTRYSELECT_KEY: ${{ secrets.INDUSTRYSELECT_KEY }}
+          HUBSPOT_ACCESS_TOKEN: ${{ secrets.HUBSPOT_ACCESS_TOKEN }}
+        run: python hubspot_sync.py
+
+      # ── 6. Upload the CSV backup as a downloadable artifact ───────────────
+      #
+      #   The CSV lives in GitHub for 30 days. Anyone with repo access can
+      #   download it from the Actions tab — no code knowledge required.
+      #
+      - name: Upload CSV backup
+        if: always()   # upload even if the sync partially failed
+        uses: actions/upload-artifact@v4
+        with:
+          name: hubspot-sync-${{ github.run_id }}-${{ github.run_attempt }}
+          path: hubspot_sync_*.csv
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # ── 7. Save updated sync_state.json for next run ──────────────────────
+      - name: Save sync state cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: sync_state.json
+          key: sync-state-${{ runner.os }}-${{ github.run_id }}
